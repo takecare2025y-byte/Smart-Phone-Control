@@ -1,0 +1,606 @@
+name: Build Android APK v3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Poora project yahin file ke andar likha hai: zip ya folder upload ki zaroorat nahi
+      - name: Create project files
+        run: |
+          mkdir -p proj
+          cd proj
+
+          cat > "settings.gradle" <<'__AKV_EOF__'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "SmartPhoneControl"
+          include(":app")
+          __AKV_EOF__
+
+          cat > "build.gradle" <<'__AKV_EOF__'
+          plugins {
+              id 'com.android.application' version '8.9.1' apply false
+              id 'org.jetbrains.kotlin.android' version '2.1.0' apply false
+          }
+          __AKV_EOF__
+
+          cat > "gradle.properties" <<'__AKV_EOF__'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          __AKV_EOF__
+
+          mkdir -p "app"
+          cat > "app/build.gradle" <<'__AKV_EOF__'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.smartphonecontrol.app'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.smartphonecontrol.app'
+                  minSdk 23
+                  targetSdk 32
+                  versionCode 2
+                  versionName '1.1'
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          kotlin {
+              compilerOptions {
+                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.15.0'
+          }
+          __AKV_EOF__
+
+          mkdir -p "app/src/main"
+          cat > "app/src/main/AndroidManifest.xml" <<'__AKV_EOF__'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application
+                  android:allowBackup="true"
+                  android:label="Smart Phone Control"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <receiver
+                      android:name=".LockAdminReceiver"
+                      android:permission="android.permission.BIND_DEVICE_ADMIN"
+                      android:exported="true">
+                      <meta-data android:name="android.app.device_admin" android:resource="@xml/device_admin" />
+                      <intent-filter><action android:name="android.app.action.DEVICE_ADMIN_ENABLED" /></intent-filter>
+                  </receiver>
+                  <service
+                      android:name=".BatteryGuardService"
+                      android:exported="false" />
+                  <service
+                      android:name=".PowerMenuService"
+                      android:exported="true"
+                      android:label="@string/accessibility_label"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+                  <receiver android:name=".BootReceiver" android:enabled="true" android:exported="false">
+                      <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/res/xml"
+          cat > "app/src/main/res/xml/device_admin.xml" <<'__AKV_EOF__'
+          <device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-policies><force-lock /></uses-policies>
+          </device-admin>
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/res/xml"
+          cat > "app/src/main/res/xml/accessibility_config.xml" <<'__AKV_EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/accessibility_description"
+              android:notificationTimeout="100" />
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/res/values"
+          cat > "app/src/main/res/values/strings.xml" <<'__AKV_EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="accessibility_label">Smart Phone Control (Restart button)</string>
+              <string name="accessibility_description">Used only by the Restart phone button to open the power menu. It does not read your screen.</string>
+          </resources>
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/java/com/smartphonecontrol/app"
+          cat > "app/src/main/java/com/smartphonecontrol/app/BatteryGuardService.kt" <<'__AKV_EOF__'
+          package com.smartphonecontrol.app
+
+          import android.app.*
+          import android.app.admin.DevicePolicyManager
+          import android.content.*
+          import android.content.pm.PackageManager
+          import android.os.*
+          import android.telephony.TelephonyManager
+          import androidx.core.app.NotificationCompat
+
+          class BatteryGuardService : Service() {
+              companion object {
+                  @Volatile
+                  var running = false
+              }
+
+              private val handler = Handler(Looper.getMainLooper())
+              private var lastLockAt = 0L
+              private var receiverRegistered = false
+
+              private val batteryReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(context: Context, intent: Intent) {
+                      if (intent.action == Intent.ACTION_BATTERY_CHANGED) {
+                          val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                          val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                          val pct = if (level >= 0 && scale > 0) level * 100 / scale else -1
+                          val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
+                          updateNotification(pct, plugged)
+                          if (pct >= 10) lastLockAt = 0L
+                      }
+                  }
+              }
+
+              private val lockRunnable = object : Runnable {
+                  override fun run() {
+                      val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                      val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                      val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+                      val pct = if (level >= 0 && scale > 0) level * 100 / scale else 100
+                      if (pct <= 5) {
+                          val inCall = if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                              val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+                              tm.callState != TelephonyManager.CALL_STATE_IDLE
+                          } else false
+                          val admin = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                          val component = ComponentName(this@BatteryGuardService, LockAdminReceiver::class.java)
+                          if (!inCall && admin.isAdminActive(component)) {
+                              admin.lockNow()
+                              lastLockAt = SystemClock.elapsedRealtime()
+                          }
+                      }
+                      handler.postDelayed(this, 40_000L)
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  running = true
+                  createChannel()
+                  startForeground(7, buildNotification("Monitoring battery level…"))
+                  if (!receiverRegistered) {
+                      registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                      receiverRegistered = true
+                  }
+                  handler.post(lockRunnable)
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+              private fun updateNotification(pct: Int, plugged: Boolean) {
+                  val message = when {
+                      pct < 0 -> "Battery monitoring is active"
+                      pct <= 5 -> "Critical battery: $pct%. Auto Lock Protection active (40-second check)."
+                      plugged && pct < 10 -> "Rescue Mode: charging below 10%. Calls and SMS remain available."
+                      pct >= 10 -> "Battery $pct%. Auto Lock Protection is off."
+                      else -> "Battery $pct%. Low-battery protection is monitoring."
+                  }
+                  val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+                  manager.notify(7, buildNotification(message))
+              }
+
+              private fun buildNotification(message: String): Notification {
+                  val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+                      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                  return NotificationCompat.Builder(this, "battery_guard")
+                      .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
+                      .setContentTitle("Smart Phone Control")
+                      .setContentText(message)
+                      .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+                      .setContentIntent(open).setOngoing(true).build()
+              }
+
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val channel = NotificationChannel("battery_guard", "Battery protection", NotificationManager.IMPORTANCE_LOW)
+                      (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+                  }
+              }
+
+              override fun onDestroy() {
+                  handler.removeCallbacks(lockRunnable)
+                  if (receiverRegistered) unregisterReceiver(batteryReceiver)
+                  running = false
+                  super.onDestroy()
+              }
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/java/com/smartphonecontrol/app"
+          cat > "app/src/main/java/com/smartphonecontrol/app/BootReceiver.kt" <<'__AKV_EOF__'
+          package com.smartphonecontrol.app
+
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Build
+
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(context: Context, intent: Intent) {
+                  if (intent.action == Intent.ACTION_BOOT_COMPLETED && Pref.isOn(context)) {
+                      val service = Intent(context, BatteryGuardService::class.java)
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(service)
+                      else context.startService(service)
+                  }
+              }
+          }
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/java/com/smartphonecontrol/app"
+          cat > "app/src/main/java/com/smartphonecontrol/app/LockAdminReceiver.kt" <<'__AKV_EOF__'
+          package com.smartphonecontrol.app
+
+          import android.app.admin.DeviceAdminReceiver
+
+          class LockAdminReceiver : DeviceAdminReceiver()
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/java/com/smartphonecontrol/app"
+          cat > "app/src/main/java/com/smartphonecontrol/app/MainActivity.kt" <<'__AKV_EOF__'
+          package com.smartphonecontrol.app
+
+          import android.Manifest
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.app.admin.DevicePolicyManager
+          import android.content.ComponentName
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.content.pm.PackageManager
+          import android.graphics.Typeface
+          import android.os.BatteryManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+
+              private val phonePermissionRequest = 101
+              private val handler = Handler(Looper.getMainLooper())
+
+              private lateinit var batteryText: TextView
+              private lateinit var adminText: TextView
+              private lateinit var protectionText: TextView
+              private lateinit var adminButton: Button
+              private lateinit var startStopButton: Button
+
+              private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+              private fun label(content: String, size: Float, bold: Boolean = false, topDp: Int = 0): TextView {
+                  val view = TextView(this)
+                  view.text = content
+                  view.textSize = size
+                  if (bold) view.setTypeface(view.typeface, Typeface.BOLD)
+                  view.setPadding(0, dp(topDp), 0, 0)
+                  return view
+              }
+
+              private fun makeButton(content: String, onClick: () -> Unit): Button {
+                  val button = Button(this)
+                  button.text = content
+                  button.setAllCaps(false)
+                  button.setOnClickListener { onClick() }
+                  return button
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = LinearLayout(this)
+                  root.orientation = LinearLayout.VERTICAL
+                  root.setPadding(dp(20), dp(24), dp(20), dp(32))
+
+                  root.addView(label("Smart Phone Control", 26f, bold = true))
+                  root.addView(label("Locks your screen when the battery is very low, so your battery lasts longer.", 16f, topDp = 6))
+
+                  // Status box: shows the state at a glance
+                  val statusBox = LinearLayout(this)
+                  statusBox.orientation = LinearLayout.VERTICAL
+                  statusBox.setBackgroundColor(0xFFEEEEEE.toInt())
+                  statusBox.setPadding(dp(16), dp(12), dp(16), dp(12))
+                  batteryText = label("", 18f, bold = true)
+                  adminText = label("", 16f, topDp = 6)
+                  protectionText = label("", 16f, topDp = 6)
+                  statusBox.addView(batteryText)
+                  statusBox.addView(adminText)
+                  statusBox.addView(protectionText)
+                  val boxParams = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                  )
+                  boxParams.topMargin = dp(20)
+                  root.addView(statusBox, boxParams)
+
+                  root.addView(label("Step 1: Allow screen lock", 18f, bold = true, topDp = 24))
+                  root.addView(label("Android asks for your permission once. Tap the button, then tap Activate.", 14f, topDp = 4))
+                  adminButton = makeButton("Allow screen lock") { requestAdmin() }
+                  root.addView(adminButton)
+
+                  root.addView(label("Step 2: Turn protection on", 18f, bold = true, topDp = 24))
+                  root.addView(label("Below 5% battery the screen locks every 40 seconds. From 10% it stops.", 14f, topDp = 4))
+                  startStopButton = makeButton("Start protection") { onStartStopClicked() }
+                  root.addView(startStopButton)
+
+                  root.addView(label("Extra", 18f, bold = true, topDp = 24))
+                  root.addView(makeButton("Restart phone") { restartPhone() })
+                  root.addView(
+                      label(
+                          "Opens the power menu. You tap Restart yourself, because Android does not let apps restart the phone on their own.",
+                          13f, topDp = 4
+                      )
+                  )
+                  root.addView(makeButton("Battery Saver settings") { openBatterySaver() })
+
+                  root.addView(
+                      label(
+                          "Good to know\n• Calls and SMS still work.\n• Keep the app's notification on.\n• Some phones may delay background work to save battery.",
+                          13f, topDp = 24
+                      )
+                  )
+
+                  val scroll = ScrollView(this)
+                  scroll.addView(root)
+                  setContentView(scroll)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  refresh()
+              }
+
+              // ---- status ---------------------------------------------------------------------------
+
+              private fun refresh() {
+                  val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                  val level = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                  val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
+                  batteryText.text = if (level >= 0 && scale > 0) "Battery: ${level * 100 / scale}%" else "Battery: unknown"
+
+                  val admin = isAdminActive()
+                  adminText.text = if (admin) "Screen lock permission: ✔ Allowed" else "Screen lock permission: ✘ Not allowed yet"
+                  adminButton.isEnabled = !admin
+                  adminButton.text = if (admin) "Screen lock allowed ✔" else "Allow screen lock"
+
+                  val on = BatteryGuardService.running
+                  protectionText.text = if (on) "Protection: ✔ ON" else "Protection: ✘ OFF"
+                  startStopButton.text = if (on) "Stop protection" else "Start protection"
+              }
+
+              private fun isAdminActive(): Boolean {
+                  val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                  return dpm.isAdminActive(ComponentName(this, LockAdminReceiver::class.java))
+              }
+
+              // ---- buttons --------------------------------------------------------------------------
+
+              private fun requestAdmin() {
+                  val component = ComponentName(this, LockAdminReceiver::class.java)
+                  val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+                  intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
+                  intent.putExtra(
+                      DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                      "Allows Smart Phone Control to lock the screen when battery is critically low."
+                  )
+                  startActivity(intent)
+              }
+
+              private fun onStartStopClicked() {
+                  if (BatteryGuardService.running) {
+                      stopProtection()
+                      return
+                  }
+                  if (!isAdminActive()) {
+                      Toast.makeText(this, "Please finish Step 1 first", Toast.LENGTH_LONG).show()
+                      return
+                  }
+                  if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+                      AlertDialog.Builder(this)
+                          .setMessage("Allow the Phone permission so the screen is not locked while you are on a call.")
+                          .setPositiveButton("Continue") { _, _ ->
+                              requestPermissions(arrayOf(Manifest.permission.READ_PHONE_STATE), phonePermissionRequest)
+                          }
+                          .setNegativeButton("Cancel", null)
+                          .show()
+                  } else {
+                      startProtection()
+                  }
+              }
+
+              override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+                  if (requestCode == phonePermissionRequest) startProtection() // works even if denied
+              }
+
+              private fun startProtection() {
+                  Pref.setOn(this, true)
+                  val service = Intent(this, BatteryGuardService::class.java)
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service) else startService(service)
+                  Toast.makeText(this, "Battery protection started", Toast.LENGTH_SHORT).show()
+                  handler.postDelayed({ refresh() }, 600L)
+              }
+
+              private fun stopProtection() {
+                  Pref.setOn(this, false)
+                  stopService(Intent(this, BatteryGuardService::class.java))
+                  Toast.makeText(this, "Battery protection stopped", Toast.LENGTH_SHORT).show()
+                  handler.postDelayed({ refresh() }, 600L)
+              }
+
+              private fun restartPhone() {
+                  val service = PowerMenuService.instance
+                  if (service != null) {
+                      if (!service.openPowerMenu()) {
+                          Toast.makeText(this, "Could not open the power menu", Toast.LENGTH_SHORT).show()
+                      }
+                      return
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle("One-time setup")
+                      .setMessage(
+                          "Turn ON \"Smart Phone Control (Restart button)\" in Accessibility settings. " +
+                              "It is used only to open the power menu.\n\n" +
+                              "If the switch is greyed out: Settings > Apps > Smart Phone Control > " +
+                              "top-right menu (3 dots) > Allow restricted settings."
+                      )
+                      .setPositiveButton("Open settings") { _, _ ->
+                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                      }
+                      .setNegativeButton("Cancel", null)
+                      .show()
+              }
+
+              private fun openBatterySaver() {
+                  try {
+                      startActivity(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))
+                  } catch (_: Exception) {
+                      Toast.makeText(this, "Battery Saver settings not available", Toast.LENGTH_SHORT).show()
+                  }
+              }
+          }
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/java/com/smartphonecontrol/app"
+          cat > "app/src/main/java/com/smartphonecontrol/app/Pref.kt" <<'__AKV_EOF__'
+          package com.smartphonecontrol.app
+
+          import android.content.Context
+
+          /** Remembers if the user switched protection ON (so it also restarts after the phone reboots). */
+          object Pref {
+              private fun sp(c: Context) = c.getSharedPreferences("spc", Context.MODE_PRIVATE)
+
+              fun isOn(c: Context): Boolean = sp(c).getBoolean("on", false)
+
+              fun setOn(c: Context, value: Boolean) {
+                  sp(c).edit().putBoolean("on", value).apply()
+              }
+          }
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/java/com/smartphonecontrol/app"
+          cat > "app/src/main/java/com/smartphonecontrol/app/PowerMenuService.kt" <<'__AKV_EOF__'
+          package com.smartphonecontrol.app
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.Intent
+          import android.view.accessibility.AccessibilityEvent
+
+          /**
+           * Used ONLY by the "Restart phone" button: it opens the system power menu
+           * (Power off / Restart). The user taps Restart. It does not read the screen.
+           */
+          class PowerMenuService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: PowerMenuService? = null
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  instance = null
+                  return super.onUnbind(intent)
+              }
+
+              override fun onDestroy() {
+                  instance = null
+                  super.onDestroy()
+              }
+
+              fun openPowerMenu(): Boolean = performGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
+          }
+          __AKV_EOF__
+
+          echo "--- project files ---"
+          find . -type f | sort
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Gradle ka version fix hai (runner ka apna Gradle alag/naya ho sakta hai)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+      - name: Build debug APK
+        working-directory: proj
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartPhoneControl-debug-apk
+          path: proj/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
