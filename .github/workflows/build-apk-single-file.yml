@@ -198,7 +198,7 @@ jobs:
                   val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
                       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                   return NotificationCompat.Builder(this, "battery_guard")
-                      .setSmallIcon(android.R.drawable.ic_lock_idle_low)
+                      .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
                       .setContentTitle("Smart Phone Control")
                       .setContentText(message)
                       .setStyle(NotificationCompat.BigTextStyle().bigText(message))
@@ -351,3 +351,4 @@ jobs:
           name: SmartPhoneControl-debug-apk
           path: proj/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          
