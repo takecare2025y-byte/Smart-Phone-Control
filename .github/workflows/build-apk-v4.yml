@@ -1,4 +1,4 @@
-name: Build Android APK v3
+name: Build Android APK v4
 
 on:
   workflow_dispatch:
@@ -52,11 +52,11 @@ jobs:
               compileSdk 35
 
               defaultConfig {
-                  applicationId 'com.smartphonecontrol.app'
+                  applicationId 'com.takecare.smartphonecontrol'
                   minSdk 23
                   targetSdk 32
-                  versionCode 2
-                  versionName '1.1'
+                  versionCode 3
+                  versionName '1.2'
               }
 
               compileOptions {
