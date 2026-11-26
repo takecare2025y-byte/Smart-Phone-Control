@@ -1,4 +1,4 @@
-name: Build Android APK v4
+name: Build Battery Buddy APK
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           cat > "settings.gradle" <<'__AKV_EOF__'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
-          rootProject.name = "SmartPhoneControl"
+          rootProject.name = "BatteryBuddy"
           include(":app")
           __AKV_EOF__
 
@@ -52,11 +52,11 @@ jobs:
               compileSdk 35
 
               defaultConfig {
-                  applicationId 'com.takecare.smartphonecontrol'
+                  applicationId 'com.smartphonecontrol.app'
                   minSdk 23
                   targetSdk 32
-                  versionCode 3
-                  versionName '1.2'
+                  versionCode 2
+                  versionName '1.1'
               }
 
               compileOptions {
@@ -85,7 +85,9 @@ jobs:
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
               <application
                   android:allowBackup="true"
-                  android:label="Smart Phone Control"
+                  android:icon="@drawable/ic_launcher"
+                  android:roundIcon="@drawable/ic_launcher"
+                  android:label="Battery Buddy"
                   android:theme="@android:style/Theme.Material.Light.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
@@ -143,9 +145,29 @@ jobs:
           cat > "app/src/main/res/values/strings.xml" <<'__AKV_EOF__'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
-              <string name="accessibility_label">Smart Phone Control (Restart button)</string>
+              <string name="accessibility_label">Battery Buddy (Restart button)</string>
               <string name="accessibility_description">Used only by the Restart phone button to open the power menu. It does not read your screen.</string>
           </resources>
+          __AKV_EOF__
+
+          mkdir -p "app/src/main/res/drawable"
+          cat > "app/src/main/res/drawable/ic_launcher.xml" <<'__AKV_EOF__'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#123B4A"
+                  android:pathData="M0,0h108v108h-108z" />
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M34,29h40c4.4,0 8,3.6 8,8v39c0,4.4 -3.6,8 -8,8h-40c-4.4,0 -8,-3.6 -8,-8v-39c0,-4.4 3.6,-8 8,-8z" />
+              <path android:fillColor="#123B4A"
+                  android:pathData="M42,22h24v8h-24z" />
+              <path android:fillColor="#38C6A5"
+                  android:pathData="M35,37h38v39h-38z" />
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M60,40L45,59h10l-4,15 15,-21h-10z" />
+          </vector>
           __AKV_EOF__
 
           mkdir -p "app/src/main/java/com/smartphonecontrol/app"
@@ -236,7 +258,7 @@ jobs:
                       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                   return NotificationCompat.Builder(this, "battery_guard")
                       .setSmallIcon(android.R.drawable.ic_lock_idle_low_battery)
-                      .setContentTitle("Smart Phone Control")
+                      .setContentTitle("Battery Buddy")
                       .setContentText(message)
                       .setStyle(NotificationCompat.BigTextStyle().bigText(message))
                       .setContentIntent(open).setOngoing(true).build()
@@ -351,7 +373,7 @@ jobs:
                   root.orientation = LinearLayout.VERTICAL
                   root.setPadding(dp(20), dp(24), dp(20), dp(32))
 
-                  root.addView(label("Smart Phone Control", 26f, bold = true))
+                  root.addView(label("Battery Buddy", 26f, bold = true))
                   root.addView(label("Locks your screen when the battery is very low, so your battery lasts longer.", 16f, topDp = 6))
 
                   // Status box: shows the state at a glance
@@ -439,7 +461,7 @@ jobs:
                   intent.putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component)
                   intent.putExtra(
                       DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                      "Allows Smart Phone Control to lock the screen when battery is critically low."
+                      "Allows Battery Buddy to lock the screen when battery is critically low."
                   )
                   startActivity(intent)
               }
@@ -497,9 +519,9 @@ jobs:
                   AlertDialog.Builder(this)
                       .setTitle("One-time setup")
                       .setMessage(
-                          "Turn ON \"Smart Phone Control (Restart button)\" in Accessibility settings. " +
+                          "Turn ON \"Battery Buddy (Restart button)\" in Accessibility settings. " +
                               "It is used only to open the power menu.\n\n" +
-                              "If the switch is greyed out: Settings > Apps > Smart Phone Control > " +
+                              "If the switch is greyed out: Settings > Apps > Battery Buddy > " +
                               "top-right menu (3 dots) > Allow restricted settings."
                       )
                       .setPositiveButton("Open settings") { _, _ ->
@@ -601,6 +623,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartPhoneControl-debug-apk
+          name: BatteryBuddy-debug-apk
           path: proj/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
